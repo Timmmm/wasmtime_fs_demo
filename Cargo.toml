@@ -16,3 +16,9 @@ tokio-util = { version = "0.7.15", features = ["io",] }
 wasmtime = "34.0.1"
 wasmtime-wasi = "34.0.1"
 wasmtime-wasi-io = "34.0.1"
+
+[workspace]
+resolver = "2"
+members = [
+    "wasi_ls",
+]
