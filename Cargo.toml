@@ -1,6 +1,18 @@
 [package]
 name = "wasmtime_fs_demo"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2024"
+license = "GPL-3.0-only"
+description = "Demo of using wasmtime with a custom filesystem implementation"
+homepage = "https://github.com/Timmmm/wasmtime_fs_demo/"
+repository = "https://github.com/Timmmm/wasmtime_fs_demo/"
+documentation = "https://github.com/Timmmm/wasmtime_fs_demo/"
 
 [dependencies]
+anyhow = { version = "1.0.98", features = ["backtrace"] }
+futures = "0.3.31"
+tokio = { version = "1.46.0", features = ["rt", "macros", "fs"] }
+tokio-util = { version = "0.7.15", features = ["io",] }
+wasmtime = "34.0.1"
+wasmtime-wasi = "34.0.1"
+wasmtime-wasi-io = "34.0.1"
