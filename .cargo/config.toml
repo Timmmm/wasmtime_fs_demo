@@ -1,0 +1,7 @@
+[env]
+# Write the wasmtime component macro output to files in the target directory
+# to aid debugging. The output is in
+#
+#     target\debug\build\wasmtime-component-macro-c6c459cc31c7fb87\out
+#
+# WASMTIME_DEBUG_BINDGEN="1"

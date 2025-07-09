@@ -1,32 +1,19 @@
+mod wasi_fs;
+mod wasi_linker_excluding_filesystem;
+mod wasi_state;
+
 use std::path::Path;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use wasi_state::WasiState;
 use wasmtime::{
     Engine, Store,
     component::{Component, Linker},
 };
 use wasmtime_wasi::{
-    DirPerms, FilePerms, I32Exit, ResourceTable,
-    p2::{WasiCtx, WasiCtxBuilder, WasiView, bindings::Command},
+    I32Exit, ResourceTable,
+    p2::{WasiCtxBuilder, bindings::Command},
 };
-use wasmtime_wasi_io::IoView;
-
-struct ComponentRunStates {
-    wasi_ctx: WasiCtx,
-    resource_table: ResourceTable,
-}
-
-impl WasiView for ComponentRunStates {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
-    }
-}
-
-impl IoView for ComponentRunStates {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.resource_table
-    }
-}
 
 async fn run(wasi_component_path: &Path) -> Result<()> {
     let engine =
@@ -36,17 +23,26 @@ async fn run(wasi_component_path: &Path) -> Result<()> {
 
     let mut linker = Linker::new(&engine);
 
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    // Normally we would do
+    //
+    //   wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    //
+    // But that adds the filesystem API too and we want to use our own one. So
+    // instead we copy & paste it, removing the filesystem API ...
+    wasi_linker_excluding_filesystem::add_to_linker_async(&mut linker)?;
+
+    // ... and then add our custom one instead.
+    wasi_state::add_to_linker_async(&mut linker)?;
 
     let wasi = WasiCtxBuilder::new()
         .allow_tcp(false)
         .allow_udp(false)
         .allow_ip_name_lookup(false)
-        .preopened_dir(".", ".", DirPerms::all(), FilePerms::all())?
         .inherit_stdout()
+        .inherit_stderr()
         .build();
 
-    let state = ComponentRunStates {
+    let state = WasiState {
         wasi_ctx: wasi,
         resource_table: ResourceTable::new(),
     };
