@@ -217,22 +217,22 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 
     async fn set_times_at(
         &mut self,
-        fd: Resource<Descriptor>,
-        path_flags: PathFlags,
-        path: String,
-        data_access_timestamp: NewTimestamp,
-        data_modification_timestamp: NewTimestamp,
+        _fd: Resource<Descriptor>,
+        _path_flags: PathFlags,
+        _path: String,
+        _data_access_timestamp: NewTimestamp,
+        _data_modification_timestamp: NewTimestamp,
     ) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn link_at(
         &mut self,
-        fd: Resource<Descriptor>,
-        old_path_flags: PathFlags,
-        old_path: String,
-        new_descriptor: Resource<Descriptor>,
-        new_path: String,
+        _fd: Resource<Descriptor>,
+        _old_path_flags: PathFlags,
+        _old_path: String,
+        _new_descriptor: Resource<Descriptor>,
+        _new_path: String,
     ) -> FsResult<()> {
         Err(ErrorCode::ReadOnly.into())
     }
