@@ -5,7 +5,7 @@ use crate::wasi_fs::{
     }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
-use gix::{objs::tree::EntryKind, ObjectId, Repository};
+use gix::{commit::describe, objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -21,6 +21,10 @@ pub struct WasiState {
     pub repo: Repository,
     // Root tree object ID.
     pub root: ObjectId,
+    // Blob contents. When we read a blob it goes into here.
+    // When we support writing we can modify them here too.
+    // TODO: Add a reference count so we can drop files that have been read.
+    pub blob_contents: HashMap<ObjectId, Vec<u8>>,
 }
 
 impl WasiView for WasiState {
@@ -40,7 +44,8 @@ fn gix_entry_kind_to_descriptor_type(kind: EntryKind) -> DescriptorType {
         EntryKind::Tree => DescriptorType::Directory,
         EntryKind::Blob | EntryKind::BlobExecutable => DescriptorType::RegularFile,
         EntryKind::Link => DescriptorType::SymbolicLink,
-        EntryKind::Commit => DescriptorType::Directory, // TODO: Check
+        // For simplicity, submodules are treated as empty directories.
+        EntryKind::Commit => DescriptorType::Directory,
     }
 }
 
@@ -141,6 +146,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         length: Filesize,
         offset: Filesize,
     ) -> FsResult<(Vec<u8>, bool)> {
+        let descriptor = self.resource_table.get_mut(&fd).unwrap();
         todo!()
     }
 
@@ -191,13 +197,15 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         let descriptor = self.resource_table.get(&fd).unwrap();
         Ok(DescriptorStat {
             type_: gix_entry_kind_to_descriptor_type(descriptor.kind),
-            link_count: 0,
+            // Git doesn't support hard links and the normal case is 1, not 0.
+            link_count: 1,
             // In posix for symlinks this is the size of the path. Does that apply here?
             size: match descriptor.kind {
-                EntryKind::Tree => 0,
-                EntryKind::Blob | EntryKind::BlobExecutable => self.repo.find_header(descriptor.id).unwrap().size(),
-                EntryKind::Link => todo!(),
-                EntryKind::Commit => 0,
+                // For symlinks this should return the size of the path, which Git
+                // conveniently stores as the blob data, so we can use the same code.
+                EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => self.repo.find_header(descriptor.id).unwrap().size(),
+                // Directory or submodule.
+                EntryKind::Tree | EntryKind::Commit => 0,
             },
             // Git doesn't record this.
             data_access_timestamp: None,
@@ -212,7 +220,12 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         path_flags: PathFlags,
         path: String,
     ) -> FsResult<DescriptorStat> {
-        todo!()
+        let descriptor = self.resource_table.get(&fd).unwrap();
+        if path_flags.contains(PathFlags::SYMLINK_FOLLOW) {
+            todo!()
+        } else {
+            todo!()
+        }
     }
 
     async fn set_times_at(
@@ -258,6 +271,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
     }
 
     async fn readlink_at(&mut self, fd: Resource<Descriptor>, path: String) -> FsResult<String> {
+        // TODO: Find the blob at the path (relative to fd)
         todo!()
     }
 
@@ -288,7 +302,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         Err(ErrorCode::ReadOnly.into())
     }
 
-    async fn unlink_file_at(&mut self, fd: Resource<Descriptor>, path: String) -> FsResult<()> {
+    async fn unlink_file_at(&mut self, _fd: Resource<Descriptor>, _path: String) -> FsResult<()> {
         Err(ErrorCode::ReadOnly.into())
     }
 
@@ -368,13 +382,7 @@ impl wasi_fs::wasi::filesystem::types::Host for WasiState {
     ) -> anyhow::Result<Option<ErrorCode>> {
         let err = self.resource_table.get(&err)?;
 
-        todo!("This doesn't compile but also I don't think we want this code");
-
-        // // Currently `err` always comes from the stream implementation which
-        // // uses standard reads/writes so only check for `std::io::Error` here.
-        // if let Some(err) = err.downcast_ref::<std::io::Error>() {
-        //     return Ok(Some(ErrorCode::from(err)));
-        // }
+        // TODO: Do something here?
 
         Ok(None)
     }
