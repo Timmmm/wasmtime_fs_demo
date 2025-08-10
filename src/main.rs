@@ -4,7 +4,7 @@ mod wasi_state;
 
 use std::path::Path;
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use wasi_state::WasiState;
 use wasmtime::{
     Engine, Store,
@@ -42,9 +42,14 @@ async fn run(wasi_component_path: &Path) -> Result<()> {
         .inherit_stderr()
         .build();
 
+    let repo = gix::open(Path::new(".")).context("opening repo")?;
+    let root = repo.head_tree_id().context("finding HEAD tree")?.detach();
+
     let state = WasiState {
         wasi_ctx: wasi,
         resource_table: ResourceTable::new(),
+        repo,
+        root,
     };
 
     let mut store = Store::new(&engine, state);

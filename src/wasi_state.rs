@@ -2,9 +2,10 @@ use crate::wasi_fs::{
     self, wasi::filesystem::types::{
         Advice, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry, ErrorCode,
         Filesize, MetadataHashValue, NewTimestamp, OpenFlags, PathFlags,
-    }, Descriptor, Dir, FsError, FsResult, ReaddirIterator
+    }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
+use gix::{objs::FindExt, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -16,6 +17,10 @@ pub struct WasiState {
     pub wasi_ctx: WasiCtx,
     // This is basically a `Vec<any>`.
     pub resource_table: ResourceTable,
+    // Git repository.
+    pub repo: Repository,
+    // Root tree object ID.
+    pub root: ObjectId,
 }
 
 impl WasiView for WasiState {
@@ -47,7 +52,7 @@ impl wasi_fs::wasi::filesystem::preopens::Host for WasiState {
         Ok(vec![(
             // Create a new file descriptor and add it to the resource table,
             // returning its index in the table.
-            self.resource_table.push(Descriptor::Dir(Dir{})).with_context(|| format!("failed to push preopen"))?,
+            self.resource_table.push(Descriptor::Tree(self.root)).with_context(|| format!("failed to push root preopen"))?,
             // Path
             "/".to_string(),
         )])
@@ -100,8 +105,9 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
     async fn get_type(&mut self, fd: Resource<Descriptor>) -> FsResult<DescriptorType> {
         let descriptor = self.resource_table.get(&fd).unwrap();
         Ok(match descriptor {
-            Descriptor::File(_) => DescriptorType::RegularFile,
-            Descriptor::Dir(_) => DescriptorType::Directory,
+            Descriptor::Blob(_) => DescriptorType::RegularFile,
+            Descriptor::Tree(_) => DescriptorType::Directory,
+            // TODO: Symlink.
         })
     }
 
@@ -140,8 +146,17 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         &mut self,
         fd: Resource<Descriptor>,
     ) -> FsResult<Resource<ReaddirIterator>> {
-        // Ignore the input. All directories have the same content!
-        Ok(self.resource_table.push(ReaddirIterator{entries: vec!["foo".to_string(), "bar".to_string()]}).unwrap())
+        let descriptor = self.resource_table.get(&fd).unwrap();
+        match descriptor {
+            Descriptor::Blob(object_id) => todo!(),
+            Descriptor::Tree(object_id) => {
+                // TODO: Could use `find_tree_iter()` ideally but I don't know if the
+                // lifetime issues are easy to deal with, or if it makes any performance difference.
+                let tree = self.repo.find_tree(*object_id).unwrap();
+                let entries: Vec<String> = tree.iter().map(|entry| entry.unwrap().filename().to_string()).collect();
+                Ok(self.resource_table.push(ReaddirIterator{entries}).unwrap())
+            }
+        }
     }
 
     async fn sync(&mut self, fd: Resource<Descriptor>) -> FsResult<()> {
@@ -202,7 +217,9 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         flags: DescriptorFlags,
     ) -> FsResult<Resource<Descriptor>> {
         if path == "." {
-            Ok(self.resource_table.push(Descriptor::Dir(Dir{})).unwrap())
+            // Make a copy of the `fd` descriptor.
+            let descriptor = self.resource_table.get(&fd).unwrap();
+            Ok(self.resource_table.push(*descriptor).unwrap())
         } else {
             todo!();
         }
