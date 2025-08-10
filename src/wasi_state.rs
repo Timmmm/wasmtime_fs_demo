@@ -38,10 +38,9 @@ impl IoView for WasiState {
 fn gix_entry_kind_to_descriptor_type(kind: EntryKind) -> DescriptorType {
     match kind {
         EntryKind::Tree => DescriptorType::Directory,
-        EntryKind::Blob => DescriptorType::RegularFile,
-        EntryKind::BlobExecutable => DescriptorType::RegularFile,
+        EntryKind::Blob | EntryKind::BlobExecutable => DescriptorType::RegularFile,
         EntryKind::Link => DescriptorType::SymbolicLink,
-        EntryKind::Commit => DescriptorType::Directory,
+        EntryKind::Commit => DescriptorType::Directory, // TODO: Check
     }
 }
 
@@ -84,15 +83,15 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 
     fn write_via_stream(
         &mut self,
-        fd: Resource<Descriptor>,
-        offset: u64,
+        _fd: Resource<Descriptor>,
+        _offset: u64,
     ) -> FsResult<Resource<Box<(dyn wasmtime_wasi::p2::OutputStream + 'static)>>> {
         Err(ErrorCode::ReadOnly.into())
     }
 
     fn append_via_stream(
         &mut self,
-        fd: Resource<Descriptor>,
+        _fd: Resource<Descriptor>,
     ) -> FsResult<Resource<Box<(dyn wasmtime_wasi::p2::OutputStream + 'static)>>> {
         Err(ErrorCode::ReadOnly.into())
     }
@@ -108,7 +107,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         Ok(())
     }
 
-    async fn sync_data(&mut self, fd: Resource<Descriptor>) -> FsResult<()> {
+    async fn sync_data(&mut self, _fd: Resource<Descriptor>) -> FsResult<()> {
         //  Sync not needed.
         Ok(())
     }
@@ -123,15 +122,15 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         Ok(gix_entry_kind_to_descriptor_type(descriptor.kind))
     }
 
-    async fn set_size(&mut self, fd: Resource<Descriptor>, size: Filesize) -> FsResult<()> {
+    async fn set_size(&mut self, _fd: Resource<Descriptor>, _size: Filesize) -> FsResult<()> {
         Err(ErrorCode::ReadOnly.into())
     }
 
     async fn set_times(
         &mut self,
-        fd: Resource<Descriptor>,
-        data_access_timestamp: NewTimestamp,
-        data_modification_timestamp: NewTimestamp,
+        _fd: Resource<Descriptor>,
+        _data_access_timestamp: NewTimestamp,
+        _data_modification_timestamp: NewTimestamp,
     ) -> FsResult<()> {
         Err(ErrorCode::ReadOnly.into())
     }
@@ -147,9 +146,9 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 
     async fn write(
         &mut self,
-        fd: Resource<Descriptor>,
-        buffer: Vec<u8>,
-        offset: Filesize,
+        _fd: Resource<Descriptor>,
+        _buffer: Vec<u8>,
+        _offset: Filesize,
     ) -> FsResult<Filesize> {
         Err(ErrorCode::ReadOnly.into())
     }
@@ -175,21 +174,36 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         Ok(self.resource_table.push(ReaddirIterator{entries}).unwrap())
     }
 
-    async fn sync(&mut self, fd: Resource<Descriptor>) -> FsResult<()> {
+    async fn sync(&mut self, _fd: Resource<Descriptor>) -> FsResult<()> {
         // Sync not needed.
         Ok(())
     }
 
     async fn create_directory_at(
         &mut self,
-        fd: Resource<Descriptor>,
-        path: String,
+        _fd: Resource<Descriptor>,
+        _path: String,
     ) -> FsResult<()> {
         Err(ErrorCode::ReadOnly.into())
     }
 
     async fn stat(&mut self, fd: Resource<Descriptor>) -> FsResult<DescriptorStat> {
-        todo!()
+        let descriptor = self.resource_table.get(&fd).unwrap();
+        Ok(DescriptorStat {
+            type_: gix_entry_kind_to_descriptor_type(descriptor.kind),
+            link_count: 0,
+            // In posix for symlinks this is the size of the path. Does that apply here?
+            size: match descriptor.kind {
+                EntryKind::Tree => 0,
+                EntryKind::Blob | EntryKind::BlobExecutable => self.repo.find_header(descriptor.id).unwrap().size(),
+                EntryKind::Link => todo!(),
+                EntryKind::Commit => 0,
+            },
+            // Git doesn't record this.
+            data_access_timestamp: None,
+            data_modification_timestamp: None,
+            status_change_timestamp: None,
+        })
     }
 
     async fn stat_at(
@@ -238,6 +252,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
             let descriptor = self.resource_table.get(&fd).unwrap();
             Ok(self.resource_table.push(*descriptor).unwrap())
         } else {
+            // TODO: Allow opening directories. Do we have to handle `.` and `/` and `..` and symlinks and everything? Ouch if so.
             todo!();
         }
     }
@@ -248,27 +263,27 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 
     async fn remove_directory_at(
         &mut self,
-        fd: Resource<Descriptor>,
-        path: String,
+        _fd: Resource<Descriptor>,
+        _path: String,
     ) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn rename_at(
         &mut self,
-        fd: Resource<Descriptor>,
-        old_path: String,
-        new_descriptor: Resource<Descriptor>,
-        new_path: String,
+        _fd: Resource<Descriptor>,
+        _old_path: String,
+        _new_descriptor: Resource<Descriptor>,
+        _new_path: String,
     ) -> FsResult<()> {
         Err(ErrorCode::ReadOnly.into())
     }
 
     async fn symlink_at(
         &mut self,
-        fd: Resource<Descriptor>,
-        old_path: String,
-        new_path: String,
+        _fd: Resource<Descriptor>,
+        _old_path: String,
+        _new_path: String,
     ) -> FsResult<()> {
         Err(ErrorCode::ReadOnly.into())
     }
@@ -289,17 +304,27 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 
     async fn metadata_hash(&mut self, fd: Resource<Descriptor>) -> FsResult<MetadataHashValue> {
         // Kind of unclear what the use case for this is if you ask me.
-        Ok(MetadataHashValue{lower: 0, upper: 0})
+        // While this is read-only we can just return the object ID which is long enough.
+        let descriptor = self.resource_table.get(&fd).unwrap();
+        Ok(MetadataHashValue{
+            lower: u64::from_le_bytes(descriptor.id.as_bytes()[0..8].try_into().unwrap()),
+            upper: u64::from_le_bytes(descriptor.id.as_bytes()[8..16].try_into().unwrap()),
+        })
     }
 
     async fn metadata_hash_at(
         &mut self,
         fd: Resource<Descriptor>,
-        path_flags: PathFlags,
-        path: String,
+        _path_flags: PathFlags,
+        _path: String,
     ) -> FsResult<MetadataHashValue> {
         // Kind of unclear what the use case for this is if you ask me.
-        Ok(MetadataHashValue{lower: 0, upper: 0})
+        // While this is read-only we can just return the object ID which is long enough.
+        let descriptor = self.resource_table.get(&fd).unwrap();
+        Ok(MetadataHashValue{
+            lower: u64::from_le_bytes(descriptor.id.as_bytes()[0..8].try_into().unwrap()),
+            upper: u64::from_le_bytes(descriptor.id.as_bytes()[8..16].try_into().unwrap()),
+        })
     }
 
     fn drop(

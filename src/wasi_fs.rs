@@ -15,7 +15,7 @@ pub struct Descriptor {
 }
 
 // Type returned by `read_dir()` that allows iterating through directory entries.
-pub struct ReaddirIterator{
+pub struct ReaddirIterator {
     pub entries: Vec<DirectoryEntry>,
 }
 
