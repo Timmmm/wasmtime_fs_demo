@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::wasi_fs::{
     self, wasi::filesystem::types::{
         Advice, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry, ErrorCode,
@@ -5,7 +7,7 @@ use crate::wasi_fs::{
     }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
-use gix::{commit::describe, objs::tree::EntryKind, ObjectId, Repository};
+use gix::{objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -17,14 +19,27 @@ pub struct WasiState {
     pub wasi_ctx: WasiCtx,
     // This is basically a `Vec<any>`.
     pub resource_table: ResourceTable,
+    // The git filesystem.
+    pub gitfs: GitFs,
+}
+
+pub struct GitFs {
     // Git repository.
     pub repo: Repository,
     // Root tree object ID.
     pub root: ObjectId,
     // Blob contents. When we read a blob it goes into here.
     // When we support writing we can modify them here too.
-    // TODO: Add a reference count so we can drop files that have been read.
+    // There's no garbage collection currently - if you open a file, read
+    // it and then close it, it will stay here. This would be relatively easy
+    // to fix with a reference count.
     pub blob_contents: HashMap<ObjectId, Vec<u8>>,
+    // Map from blob ID to its parent directory so we can implement `..` in
+    // path traversal. We add to this every time we open a file.
+    // There's no garbage collection currently - if you open a directory
+    // and close it this will stay here. This would be relatively easy to fix
+    // with a reference count, but it's probably not worth it in this case.
+    pub parent: HashMap<ObjectId, ObjectId>,
 }
 
 impl WasiView for WasiState {
@@ -68,7 +83,7 @@ impl wasi_fs::wasi::filesystem::preopens::Host for WasiState {
             // returning its index in the table.
             self.resource_table.push(Descriptor{
                 kind: EntryKind::Tree,
-                id: self.root,
+                id: self.gitfs.root,
             }).with_context(|| format!("failed to push root preopen"))?,
             // Path
             "/".to_string(),
@@ -166,7 +181,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         let descriptor = self.resource_table.get(&fd).unwrap();
         // TODO: Could use `find_tree_iter()` ideally but I don't know if the
         // lifetime issues are easy to deal with, or if it makes any performance difference.
-        let tree = self.repo.find_tree(descriptor.id).unwrap();
+        let tree = self.gitfs.repo.find_tree(descriptor.id).unwrap();
         let mut entries: Vec<_> = tree.iter().map(|entry| {
             let entry = entry.unwrap();
             DirectoryEntry {
@@ -203,7 +218,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
             size: match descriptor.kind {
                 // For symlinks this should return the size of the path, which Git
                 // conveniently stores as the blob data, so we can use the same code.
-                EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => self.repo.find_header(descriptor.id).unwrap().size(),
+                EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => self.gitfs.repo.find_header(descriptor.id).unwrap().size(),
                 // Directory or submodule.
                 EntryKind::Tree | EntryKind::Commit => 0,
             },

@@ -5,7 +5,7 @@ mod wasi_state;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
-use wasi_state::WasiState;
+use wasi_state::{GitFs, WasiState};
 use wasmtime::{
     Engine, Store,
     component::{Component, Linker},
@@ -48,8 +48,12 @@ async fn run(wasi_component_path: &Path) -> Result<()> {
     let state = WasiState {
         wasi_ctx: wasi,
         resource_table: ResourceTable::new(),
-        repo,
-        root,
+        gitfs: GitFs {
+            repo,
+            root,
+            blob_contents: Default::default(),
+            parent: Default::default(),
+        },
     };
 
     let mut store = Store::new(&engine, state);

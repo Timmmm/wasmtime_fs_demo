@@ -13,13 +13,7 @@ pub struct Descriptor {
     // What kind of Git object it is (blob, tree etc.)
     pub kind: EntryKind,
     // Git commit ID.
-    // TODO: This probably isn't sufficient because we need to be able
-    // to navigate to parent directories. Really we need a `Vec<ObjectId>`
-    // but that could be slow seeing as they're 20 bytes each.
-    // Eh it's probably fine for now.
     pub id: ObjectId,
-    // Ordered IDs for parent trees, so we can use `..`.
-    pub parents: Vec<ObjectId>,
 }
 
 // Type returned by `read_dir()` that allows iterating through directory entries.
