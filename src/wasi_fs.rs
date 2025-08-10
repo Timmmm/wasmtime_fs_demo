@@ -1,4 +1,4 @@
-use crate::wasi_fs::wasi::filesystem::types::ErrorCode;
+use crate::wasi_fs::wasi::filesystem::types::{DirectoryEntry, ErrorCode};
 use gix::ObjectId;
 use wasmtime_wasi::TrappableError;
 
@@ -17,7 +17,7 @@ pub enum Descriptor {
 
 // Type returned by `read_dir()` that allows iterating through directory entries.
 pub struct ReaddirIterator{
-    pub entries: Vec<String>,
+    pub entries: Vec<DirectoryEntry>,
 }
 
 // Copy & pasted from wasmtime-wasi with everything except wasi-filesystem removed

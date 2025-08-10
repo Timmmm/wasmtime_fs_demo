@@ -5,7 +5,7 @@ use crate::wasi_fs::{
     }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
-use gix::{objs::FindExt, ObjectId, Repository};
+use gix::{ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -86,12 +86,13 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 
     async fn advise(
         &mut self,
-        fd: Resource<Descriptor>,
-        offset: Filesize,
-        length: Filesize,
-        advice: Advice,
+        _fd: Resource<Descriptor>,
+        _offset: Filesize,
+        _length: Filesize,
+        _advice: Advice,
     ) -> FsResult<()> {
-        todo!()
+        // Not used.
+        Ok(())
     }
 
     async fn sync_data(&mut self, fd: Resource<Descriptor>) -> FsResult<()> {
@@ -153,7 +154,22 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
                 // TODO: Could use `find_tree_iter()` ideally but I don't know if the
                 // lifetime issues are easy to deal with, or if it makes any performance difference.
                 let tree = self.repo.find_tree(*object_id).unwrap();
-                let entries: Vec<String> = tree.iter().map(|entry| entry.unwrap().filename().to_string()).collect();
+                let mut entries: Vec<_> = tree.iter().map(|entry| {
+                    let entry = entry.unwrap();
+                    DirectoryEntry {
+                        type_: match entry.kind() {
+                            gix::objs::tree::EntryKind::Tree => DescriptorType::Directory,
+                            gix::objs::tree::EntryKind::Blob => DescriptorType::RegularFile,
+                            gix::objs::tree::EntryKind::BlobExecutable => DescriptorType::RegularFile,
+                            gix::objs::tree::EntryKind::Link => DescriptorType::SymbolicLink,
+                            gix::objs::tree::EntryKind::Commit => DescriptorType::Directory,
+                        },
+                        name: entry.filename().to_string(),
+                    }
+                }).collect();
+                // Reverse because we pop them off the back when reading.
+                // TODO: Probably can do this more efficiently somehow.
+                entries.reverse();
                 Ok(self.resource_table.push(ReaddirIterator{entries}).unwrap())
             }
         }
@@ -301,8 +317,7 @@ impl wasi_fs::wasi::filesystem::types::HostDirectoryEntryStream for WasiState {
         stream: Resource<ReaddirIterator>,
     ) -> FsResult<Option<DirectoryEntry>> {
         let stream = self.resource_table.get_mut(&stream).unwrap();
-        let entry = stream.entries.pop();
-        Ok(entry.map(|name| DirectoryEntry { type_: DescriptorType::RegularFile, name }))
+        Ok(stream.entries.pop())
     }
 
     fn drop(
