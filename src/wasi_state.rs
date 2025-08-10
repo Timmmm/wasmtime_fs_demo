@@ -5,7 +5,7 @@ use crate::wasi_fs::{
     }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
-use gix::{ObjectId, Repository};
+use gix::{objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -35,6 +35,16 @@ impl IoView for WasiState {
     }
 }
 
+fn gix_entry_kind_to_descriptor_type(kind: EntryKind) -> DescriptorType {
+    match kind {
+        EntryKind::Tree => DescriptorType::Directory,
+        EntryKind::Blob => DescriptorType::RegularFile,
+        EntryKind::BlobExecutable => DescriptorType::RegularFile,
+        EntryKind::Link => DescriptorType::SymbolicLink,
+        EntryKind::Commit => DescriptorType::Directory,
+    }
+}
+
 // The preopens are the only place the filesystem is provided a Descriptor,
 // from which to try open_at to get more Descriptors. If we don't provide
 // anything here, none of the methods on Descriptor will ever be reachable,
@@ -52,7 +62,10 @@ impl wasi_fs::wasi::filesystem::preopens::Host for WasiState {
         Ok(vec![(
             // Create a new file descriptor and add it to the resource table,
             // returning its index in the table.
-            self.resource_table.push(Descriptor::Tree(self.root)).with_context(|| format!("failed to push root preopen"))?,
+            self.resource_table.push(Descriptor{
+                kind: EntryKind::Tree,
+                id: self.root,
+            }).with_context(|| format!("failed to push root preopen"))?,
             // Path
             "/".to_string(),
         )])
@@ -74,14 +87,14 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
         offset: u64,
     ) -> FsResult<Resource<Box<(dyn wasmtime_wasi::p2::OutputStream + 'static)>>> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     fn append_via_stream(
         &mut self,
         fd: Resource<Descriptor>,
     ) -> FsResult<Resource<Box<(dyn wasmtime_wasi::p2::OutputStream + 'static)>>> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn advise(
@@ -96,24 +109,22 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
     }
 
     async fn sync_data(&mut self, fd: Resource<Descriptor>) -> FsResult<()> {
-        todo!()
+        //  Sync not needed.
+        Ok(())
     }
 
     async fn get_flags(&mut self, fd: Resource<Descriptor>) -> FsResult<DescriptorFlags> {
-        todo!()
+        // TODO: I guess we will need to record in the descriptor how it was opened.
+        Ok(DescriptorFlags::READ)
     }
 
     async fn get_type(&mut self, fd: Resource<Descriptor>) -> FsResult<DescriptorType> {
         let descriptor = self.resource_table.get(&fd).unwrap();
-        Ok(match descriptor {
-            Descriptor::Blob(_) => DescriptorType::RegularFile,
-            Descriptor::Tree(_) => DescriptorType::Directory,
-            // TODO: Symlink.
-        })
+        Ok(gix_entry_kind_to_descriptor_type(descriptor.kind))
     }
 
     async fn set_size(&mut self, fd: Resource<Descriptor>, size: Filesize) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn set_times(
@@ -122,7 +133,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         data_access_timestamp: NewTimestamp,
         data_modification_timestamp: NewTimestamp,
     ) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn read(
@@ -140,7 +151,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         buffer: Vec<u8>,
         offset: Filesize,
     ) -> FsResult<Filesize> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn read_directory(
@@ -148,35 +159,25 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
     ) -> FsResult<Resource<ReaddirIterator>> {
         let descriptor = self.resource_table.get(&fd).unwrap();
-        match descriptor {
-            Descriptor::Blob(object_id) => todo!(),
-            Descriptor::Tree(object_id) => {
-                // TODO: Could use `find_tree_iter()` ideally but I don't know if the
-                // lifetime issues are easy to deal with, or if it makes any performance difference.
-                let tree = self.repo.find_tree(*object_id).unwrap();
-                let mut entries: Vec<_> = tree.iter().map(|entry| {
-                    let entry = entry.unwrap();
-                    DirectoryEntry {
-                        type_: match entry.kind() {
-                            gix::objs::tree::EntryKind::Tree => DescriptorType::Directory,
-                            gix::objs::tree::EntryKind::Blob => DescriptorType::RegularFile,
-                            gix::objs::tree::EntryKind::BlobExecutable => DescriptorType::RegularFile,
-                            gix::objs::tree::EntryKind::Link => DescriptorType::SymbolicLink,
-                            gix::objs::tree::EntryKind::Commit => DescriptorType::Directory,
-                        },
-                        name: entry.filename().to_string(),
-                    }
-                }).collect();
-                // Reverse because we pop them off the back when reading.
-                // TODO: Probably can do this more efficiently somehow.
-                entries.reverse();
-                Ok(self.resource_table.push(ReaddirIterator{entries}).unwrap())
+        // TODO: Could use `find_tree_iter()` ideally but I don't know if the
+        // lifetime issues are easy to deal with, or if it makes any performance difference.
+        let tree = self.repo.find_tree(descriptor.id).unwrap();
+        let mut entries: Vec<_> = tree.iter().map(|entry| {
+            let entry = entry.unwrap();
+            DirectoryEntry {
+                type_: gix_entry_kind_to_descriptor_type(entry.kind()),
+                name: entry.filename().to_string(),
             }
-        }
+        }).collect();
+        // Reverse because we pop them off the back when reading.
+        // TODO: Probably can do this more efficiently somehow.
+        entries.reverse();
+        Ok(self.resource_table.push(ReaddirIterator{entries}).unwrap())
     }
 
     async fn sync(&mut self, fd: Resource<Descriptor>) -> FsResult<()> {
-        todo!()
+        // Sync not needed.
+        Ok(())
     }
 
     async fn create_directory_at(
@@ -184,7 +185,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
         path: String,
     ) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn stat(&mut self, fd: Resource<Descriptor>) -> FsResult<DescriptorStat> {
@@ -219,7 +220,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         new_descriptor: Resource<Descriptor>,
         new_path: String,
     ) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     // Open the relative path `path`, relative to the directory `fd`. Unlike
@@ -260,7 +261,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         new_descriptor: Resource<Descriptor>,
         new_path: String,
     ) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn symlink_at(
@@ -269,11 +270,11 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         old_path: String,
         new_path: String,
     ) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn unlink_file_at(&mut self, fd: Resource<Descriptor>, path: String) -> FsResult<()> {
-        todo!()
+        Err(ErrorCode::ReadOnly.into())
     }
 
     async fn is_same_object(
@@ -281,7 +282,9 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
         other: Resource<Descriptor>,
     ) -> wasmtime::Result<bool> {
-        todo!()
+        let fd = self.resource_table.get(&fd).unwrap();
+        let other = self.resource_table.get(&other).unwrap();
+        Ok(fd == other)
     }
 
     async fn metadata_hash(&mut self, fd: Resource<Descriptor>) -> FsResult<MetadataHashValue> {
@@ -330,15 +333,25 @@ impl wasi_fs::wasi::filesystem::types::HostDirectoryEntryStream for WasiState {
 }
 
 impl wasi_fs::wasi::filesystem::types::Host for WasiState {
-    fn filesystem_error_code(
-        &mut self,
-        _: Resource<wasmtime_wasi_io::streams::Error>,
-    ) -> anyhow::Result<Option<wasi_fs::wasi::filesystem::types::ErrorCode>> {
-        todo!()
+    fn convert_error_code(&mut self, err: FsError) -> wasmtime::Result<ErrorCode> {
+        err.downcast()
     }
 
-    fn convert_error_code(&mut self, err: FsError) -> wasmtime::Result<ErrorCode> {
-        todo!()
+    fn filesystem_error_code(
+        &mut self,
+        err: Resource<anyhow::Error>,
+    ) -> anyhow::Result<Option<ErrorCode>> {
+        let err = self.resource_table.get(&err)?;
+
+        todo!("This doesn't compile but also I don't think we want this code");
+
+        // // Currently `err` always comes from the stream implementation which
+        // // uses standard reads/writes so only check for `std::io::Error` here.
+        // if let Some(err) = err.downcast_ref::<std::io::Error>() {
+        //     return Ok(Some(ErrorCode::from(err)));
+        // }
+
+        Ok(None)
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::wasi_fs::wasi::filesystem::types::{DirectoryEntry, ErrorCode};
-use gix::ObjectId;
+use gix::{objs::tree::EntryKind, ObjectId};
 use wasmtime_wasi::TrappableError;
 
 pub type FsResult<T> = Result<T, FsError>;
@@ -8,11 +8,10 @@ pub type FsError = TrappableError<ErrorCode>;
 // A descriptor is the state associated with a file descriptor. It is stored
 // in the resource table. Normally this would hold any information you need
 // to access the underlying file/directory (e.g. a POSIX file descriptor).
-#[derive(Copy, Clone)]
-pub enum Descriptor {
-    Blob(ObjectId),
-    Tree(ObjectId),
-    // TODO: Commit (submodule).
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct Descriptor {
+    pub kind: EntryKind,
+    pub id: ObjectId,
 }
 
 // Type returned by `read_dir()` that allows iterating through directory entries.
