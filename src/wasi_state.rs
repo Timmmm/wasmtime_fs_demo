@@ -7,7 +7,7 @@ use crate::wasi_fs::{
     }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
-use gix::{objs::tree::EntryKind, ObjectId, Repository};
+use gix::{objs::{tree::EntryKind, Kind}, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -21,6 +21,18 @@ pub struct WasiState {
     pub resource_table: ResourceTable,
     // The git filesystem.
     pub gitfs: GitFs,
+}
+
+impl WasiView for WasiState {
+    fn ctx(&mut self) -> &mut WasiCtx {
+        &mut self.wasi_ctx
+    }
+}
+
+impl IoView for WasiState {
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.resource_table
+    }
 }
 
 pub struct GitFs {
@@ -42,15 +54,52 @@ pub struct GitFs {
     pub parent: HashMap<ObjectId, ObjectId>,
 }
 
-impl WasiView for WasiState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
-    }
-}
+impl GitFs {
+    // Follow a path relative to an existing directory.
+    // See https://pubs.opengroup.org/onlinepubs/9799919799/ for details about
+    // POSIX's mad pathname resolution.
+    fn find_at(&mut self, from_dir: ObjectId, path: &str) -> ObjectId {
+        // Get the object ID to start from and the relative path from it.
+        let (mut id, relative_path) = if let Some(path_without_leading_slash) = path.strip_prefix('/') {
+            // Absolute path - start from the root and strip the leading /. Ignore from_dir.
+            (self.root, path_without_leading_slash)
+        } else {
+            // Relative path, just used the passed in info.
+            (from_dir, path)
+        };
 
-impl IoView for WasiState {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.resource_table
+        // TODO: Allow a maximum of 40 symlink follows. Based on this value
+        // https://github.com/wasix-org/wasix-libc/blob/28158c2ece7401604a9f6a409be320b47fffe78e/expected/wasm32-wasi/predefined-macros.txt#L4617
+
+        for component in relative_path.split('/') {
+            match component {
+                "" | "." => continue,
+                ".." => {
+                    id = *self.parent.get(&id).unwrap(); // TODO: This will happen for `/..`
+                }
+                _ => {
+                    // Need to read if it is a symlink ugh. Plan 9 was right.
+                    // TODO: Use find_header?
+                    let tree = self.repo.find_tree(id).unwrap(); // TODO: Don't unwrap.
+                    // Find the child object.
+                    let entry = tree.find_entry(component).unwrap(); // TODO: Don't unwrap.
+                    match entry.kind() {
+                        EntryKind::Tree => {
+                            // Child ID.
+                            id = entry.id().detach();
+                        }
+                        EntryKind::Blob => {
+                            // This must be the last component.
+                        }
+                        EntryKind::BlobExecutable => todo!(),
+                        EntryKind::Link => todo!(),
+                        EntryKind::Commit => todo!(),
+                    }
+                    id = entry.id().detach();
+                }
+            }
+        }
+        id
     }
 }
 
