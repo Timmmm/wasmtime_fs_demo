@@ -7,7 +7,7 @@ use crate::wasi_fs::{
     }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
-use gix::{objs::{tree::EntryKind, Kind}, ObjectId, Repository};
+use gix::{dir::Entry, objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -55,51 +55,65 @@ pub struct GitFs {
 }
 
 impl GitFs {
-    // Follow a path relative to an existing directory.
+    // Follow a path relative to an existing file or directory.
     // See https://pubs.opengroup.org/onlinepubs/9799919799/ for details about
-    // POSIX's mad pathname resolution.
-    fn find_at(&mut self, from_dir: ObjectId, path: &str) -> ObjectId {
-        // Get the object ID to start from and the relative path from it.
-        let (mut id, relative_path) = if let Some(path_without_leading_slash) = path.strip_prefix('/') {
-            // Absolute path - start from the root and strip the leading /. Ignore from_dir.
-            (self.root, path_without_leading_slash)
-        } else {
-            // Relative path, just used the passed in info.
-            (from_dir, path)
-        };
+    // POSIX's mad pathname resolution, and https://github.com/WebAssembly/wasi-filesystem/blob/main/path-resolution.md
+    // for WASI specifically.
+    //
+    // Only relative paths are allowed. Absolute paths cause a permission error.
+    // For this function the target file or directory (or symlink) must exist.
+    fn resolve_path(&mut self, from: Descriptor, relative_path: &str, follow_final_symlink: bool) -> FsResult<Descriptor> {
+        if relative_path.starts_with('/') {
+            return Err(ErrorCode::Access.into());
+        }
+
+        let mut descriptor = from;
 
         // TODO: Allow a maximum of 40 symlink follows. Based on this value
         // https://github.com/wasix-org/wasix-libc/blob/28158c2ece7401604a9f6a409be320b47fffe78e/expected/wasm32-wasi/predefined-macros.txt#L4617
+        let mut symlink_follow_remaining = 40;
 
+        // So we can handle the last component separately.
         for component in relative_path.split('/') {
-            match component {
-                "" | "." => continue,
-                ".." => {
-                    id = *self.parent.get(&id).unwrap(); // TODO: This will happen for `/..`
-                }
-                _ => {
-                    // Need to read if it is a symlink ugh. Plan 9 was right.
-                    // TODO: Use find_header?
-                    let tree = self.repo.find_tree(id).unwrap(); // TODO: Don't unwrap.
-                    // Find the child object.
-                    let entry = tree.find_entry(component).unwrap(); // TODO: Don't unwrap.
-                    match entry.kind() {
-                        EntryKind::Tree => {
-                            // Child ID.
-                            id = entry.id().detach();
+            match descriptor.kind {
+                EntryKind::Tree => {
+                    match component {
+                        // Either two consecutive slashes "foo/bar//baz" or a trailing slash "foo/bar/".
+                        "" => continue,
+                        "." => continue,
+                        ".." => {
+                            // If there's no parent we're trying to .. above the root, which is not allowed by WASI.
+                            descriptor.id = *self.parent.get(&descriptor.id).ok_or(ErrorCode::Access)?;
+                            // Parent directory must be a directory.
+                            descriptor.kind = EntryKind::Tree;
                         }
-                        EntryKind::Blob => {
-                            // This must be the last component.
+                        // Named child.
+                        _ => {
+                            // Open the current directory and find the child component.
+                            let tree = self.repo.find_tree(descriptor.id).map_err(|_| ErrorCode::NoEntry)?;
+                            // Find the child object.
+                            let entry = tree.find_entry(component).ok_or(ErrorCode::NoEntry)?;
+
+                            descriptor.id = entry.id().detach();
+                            descriptor.kind = entry.kind();
                         }
-                        EntryKind::BlobExecutable => todo!(),
-                        EntryKind::Link => todo!(),
-                        EntryKind::Commit => todo!(),
                     }
-                    id = entry.id().detach();
                 }
+                EntryKind::Blob | EntryKind::BlobExecutable => {
+                    // Can't get a child of a file.
+                    return Err(ErrorCode::NotDirectory.into());
+                }
+                EntryKind::Link => {
+                    todo!("symlink support")
+                },
+                EntryKind::Commit => todo!(),
             }
         }
-        id
+
+        if descriptor.kind == EntryKind::Link && follow_final_symlink {
+            todo!("symlink support")
+        }
+        Ok(descriptor)
     }
 }
 
@@ -284,12 +298,28 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         path_flags: PathFlags,
         path: String,
     ) -> FsResult<DescriptorStat> {
-        let descriptor = self.resource_table.get(&fd).unwrap();
-        if path_flags.contains(PathFlags::SYMLINK_FOLLOW) {
-            todo!()
-        } else {
-            todo!()
-        }
+        let from_descriptor = self.resource_table.get(&fd).unwrap();
+        let follow_final_symlink: bool = path_flags.contains(PathFlags::SYMLINK_FOLLOW);
+        let descriptor = self.gitfs.resolve_path(*from_descriptor, &path, follow_final_symlink)?;
+
+        // TODO: Extract into function.
+        Ok(DescriptorStat {
+            type_: gix_entry_kind_to_descriptor_type(descriptor.kind),
+            // Git doesn't support hard links and the normal case is 1, not 0.
+            link_count: 1,
+            // In posix for symlinks this is the size of the path. Does that apply here?
+            size: match descriptor.kind {
+                // For symlinks this should return the size of the path, which Git
+                // conveniently stores as the blob data, so we can use the same code.
+                EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => self.gitfs.repo.find_header(descriptor.id).unwrap().size(),
+                // Directory or submodule.
+                EntryKind::Tree | EntryKind::Commit => 0,
+            },
+            // Git doesn't record this.
+            data_access_timestamp: None,
+            data_modification_timestamp: None,
+            status_change_timestamp: None,
+        })
     }
 
     async fn set_times_at(
@@ -324,19 +354,38 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         open_flags: OpenFlags,
         flags: DescriptorFlags,
     ) -> FsResult<Resource<Descriptor>> {
-        if path == "." {
-            // Make a copy of the `fd` descriptor.
-            let descriptor = self.resource_table.get(&fd).unwrap();
-            Ok(self.resource_table.push(*descriptor).unwrap())
-        } else {
-            // TODO: Allow opening directories. Do we have to handle `.` and `/` and `..` and symlinks and everything? Ouch if so.
-            todo!();
+        if open_flags.contains(OpenFlags::CREATE) || open_flags.contains(OpenFlags::TRUNCATE) || flags.contains(DescriptorFlags::WRITE) {
+            return Err(ErrorCode::ReadOnly.into());
         }
+
+        // TODO: Handle other DescriptorFlags maybe.
+
+        let from_descriptor = self.resource_table.get(&fd).unwrap();
+        let follow_final_symlink: bool = path_flags.contains(PathFlags::SYMLINK_FOLLOW);
+        let descriptor = self.gitfs.resolve_path(*from_descriptor, &path, follow_final_symlink)?;
+
+        if open_flags.contains(OpenFlags::EXCLUSIVE) {
+            return Err(ErrorCode::Exist.into());
+        }
+
+        if open_flags.contains(OpenFlags::DIRECTORY) && descriptor.kind != EntryKind::Tree {
+            return Err(ErrorCode::NotDirectory.into());
+        }
+
+        Ok(self.resource_table.push(descriptor).unwrap())
     }
 
     async fn readlink_at(&mut self, fd: Resource<Descriptor>, path: String) -> FsResult<String> {
-        // TODO: Find the blob at the path (relative to fd)
-        todo!()
+        let from_descriptor = self.resource_table.get(&fd).unwrap();
+        let descriptor = self.gitfs.resolve_path(*from_descriptor, &path, false)?;
+
+        if descriptor.kind != EntryKind::Link {
+            return Err(ErrorCode::Invalid.into());
+        }
+
+        let mut link = self.gitfs.repo.find_blob(descriptor.id).map_err(|_| ErrorCode::NoEntry)?;
+        let link_str = String::from_utf8(std::mem::take(&mut link.data)).map_err(|_| ErrorCode::IllegalByteSequence)?;
+        Ok(link_str.to_owned())
     }
 
     async fn remove_directory_at(
