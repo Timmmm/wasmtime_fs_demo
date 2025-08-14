@@ -10,8 +10,7 @@ use anyhow::Context as _;
 use gix::{objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
-    ResourceTable,
-    p2::{WasiCtx, WasiView},
+    p2::{StreamResult, WasiCtx, WasiView}, ResourceTable
 };
 use wasmtime_wasi_io::IoView;
 
@@ -176,7 +175,11 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
         offset: u64,
     ) -> FsResult<Resource<Box<(dyn wasmtime_wasi::p2::InputStream + 'static)>>> {
+        let descriptor = self.resource_table.get_mut(&fd).unwrap();
+        let data = self.gitfs.read_blob(descriptor.id)?;
+        // TODO: Don't copy all the data.
         todo!()
+        // Ok(self.resource_table.push(Box::new(ReadStream{data: data.to_owned(), offset})).unwrap())
     }
 
     fn write_via_stream(
@@ -518,6 +521,48 @@ impl wasi_fs::wasi::filesystem::types::Host for WasiState {
         // TODO: Do something here?
 
         Ok(None)
+    }
+}
+
+struct ReadStream {
+    data: Vec<u8>,
+    offset: u64,
+}
+
+#[async_trait::async_trait]
+impl wasmtime_wasi::p2::Pollable for ReadStream {
+    /// An asynchronous function which resolves when this object's readiness
+    /// operation is ready.
+    ///
+    /// This function is invoked as part of `poll` in `wasi:io/poll`. The
+    /// meaning of when this function Returns depends on what object this
+    /// [`Pollable`] is attached to. When the returned future resolves then the
+    /// corresponding call to `wasi:io/poll` will return.
+    ///
+    /// Note that this method does not return an error. Returning an error
+    /// should be done through accessors on the object that this `pollable` is
+    /// connected to. The call to `wasi:io/poll` itself does not return errors,
+    /// only a list of ready objects.
+    async fn ready(&mut self) {
+        // It's always ready.
+    }
+}
+
+impl wasmtime_wasi::p2::InputStream for ReadStream {
+    /// Reads up to `size` bytes, returning a buffer holding these bytes on
+    /// success.
+    ///
+    /// This function does not block the current thread and is the equivalent of
+    /// a non-blocking read. On success all bytes read are returned through
+    /// `Bytes`, which is no larger than the `size` provided. If the returned
+    /// list of `Bytes` is empty then no data is ready to be read at this time.
+    ///
+    /// # Errors
+    ///
+    /// The [`StreamError`] return value communicates when this stream is
+    /// closed, when a read fails, or when a trap should be generated.
+    fn read(&mut self, size: usize) -> StreamResult<bytes::Bytes> {
+        todo!()
     }
 }
 
