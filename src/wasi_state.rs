@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 
 use crate::wasi_fs::{
     self, wasi::filesystem::types::{
@@ -7,7 +7,7 @@ use crate::wasi_fs::{
     }, Descriptor, FsError, FsResult, ReaddirIterator
 };
 use anyhow::Context as _;
-use gix::{dir::Entry, objs::tree::EntryKind, ObjectId, Repository};
+use gix::{objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
     ResourceTable,
@@ -114,6 +114,21 @@ impl GitFs {
             todo!("symlink support")
         }
         Ok(descriptor)
+    }
+
+    // Read a full blob (the only API Gix gives because it may be compressed
+    // or based on diffs). It is cached.
+    fn read_blob(&mut self, id: ObjectId) -> FsResult<&[u8]> {
+        match self.blob_contents.entry(id) {
+            hash_map::Entry::Vacant(vacant_entry) => {
+                let mut blob = self.repo.find_blob(id).map_err(|_| ErrorCode::NoEntry)?;
+                let data = blob.take_data();
+                Ok(vacant_entry.insert(data))
+            }
+            hash_map::Entry::Occupied(occupied_entry) => {
+                Ok(occupied_entry.into_mut())
+            }
+        }
     }
 }
 
@@ -225,7 +240,12 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         offset: Filesize,
     ) -> FsResult<(Vec<u8>, bool)> {
         let descriptor = self.resource_table.get_mut(&fd).unwrap();
-        todo!()
+        let blob = self.gitfs.read_blob(descriptor.id)?;
+        // TODO: Handle EOF properly.
+        // TODO: Handle usize properly.
+        let length = length as usize;
+        let offset = offset as usize;
+        Ok((blob[offset..(offset + length)].to_owned(), false))
     }
 
     async fn write(
@@ -384,7 +404,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         }
 
         let mut link = self.gitfs.repo.find_blob(descriptor.id).map_err(|_| ErrorCode::NoEntry)?;
-        let link_str = String::from_utf8(std::mem::take(&mut link.data)).map_err(|_| ErrorCode::IllegalByteSequence)?;
+        let link_str = String::from_utf8(link.take_data()).map_err(|_| ErrorCode::IllegalByteSequence)?;
         Ok(link_str.to_owned())
     }
 
