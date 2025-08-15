@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use gix::{objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
-    p2::{StreamResult, WasiCtx, WasiView}, ResourceTable
+    p2::{StreamError, StreamResult, WasiCtx, WasiView}, ResourceTable
 };
 use wasmtime_wasi_io::IoView;
 
@@ -566,9 +566,8 @@ impl wasmtime_wasi::p2::InputStream for ReadStream {
     /// The [`StreamError`] return value communicates when this stream is
     /// closed, when a read fails, or when a trap should be generated.
     fn read(&mut self, size: usize) -> StreamResult<bytes::Bytes> {
-        // TODO: Handle end of file.
-        if self.offset > self.data.len() {
-            Ok(bytes::Bytes::new())
+        if self.offset >= self.data.len() {
+            Err(StreamError::Closed)
         } else {
             let size = size.min(self.data.len() - self.offset);
             let offset = self.offset;
