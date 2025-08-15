@@ -178,8 +178,12 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         let descriptor = self.resource_table.get_mut(&fd).unwrap();
         let data = self.gitfs.read_blob(descriptor.id)?;
         // TODO: Don't copy all the data.
-        todo!()
-        // Ok(self.resource_table.push(Box::new(ReadStream{data: data.to_owned(), offset})).unwrap())
+        // TODO: Handle usize=32 bit. In fact, we probably can't actually read files
+        // stored in Git that are more than 4 GB?
+        let read_stream = ReadStream{data: bytes::Bytes::copy_from_slice(data), offset: offset as usize};
+        let boxed_read_stream : Box<dyn wasmtime_wasi::p2::InputStream> = Box::new(read_stream);
+        // TODO: Drop from the resource table at some point somehow? Might have to use push_child?
+        Ok(self.resource_table.push(boxed_read_stream).unwrap())
     }
 
     fn write_via_stream(
@@ -525,8 +529,8 @@ impl wasi_fs::wasi::filesystem::types::Host for WasiState {
 }
 
 struct ReadStream {
-    data: Vec<u8>,
-    offset: u64,
+    data: bytes::Bytes,
+    offset: usize,
 }
 
 #[async_trait::async_trait]
@@ -562,7 +566,15 @@ impl wasmtime_wasi::p2::InputStream for ReadStream {
     /// The [`StreamError`] return value communicates when this stream is
     /// closed, when a read fails, or when a trap should be generated.
     fn read(&mut self, size: usize) -> StreamResult<bytes::Bytes> {
-        todo!()
+        // TODO: Handle end of file.
+        if self.offset > self.data.len() {
+            Ok(bytes::Bytes::new())
+        } else {
+            let size = size.min(self.data.len() - self.offset);
+            let offset = self.offset;
+            self.offset += size;
+            Ok(self.data.slice(offset..offset + size))
+        }
     }
 }
 

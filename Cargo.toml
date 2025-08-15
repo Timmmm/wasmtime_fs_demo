@@ -10,7 +10,9 @@ documentation = "https://github.com/Timmmm/wasmtime_fs_demo/"
 
 [dependencies]
 anyhow = { version = "1.0.98", features = ["backtrace"] }
+# Must match the version used by wasmtime-wasi.
 async-trait = "0.1.88"
+# Must match the version used by wasmtime-wasi.
 bytes = "1.10.1"
 futures = "0.3.31"
 gix = "0.73.0"
