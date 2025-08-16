@@ -248,11 +248,17 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
     ) -> FsResult<(Vec<u8>, bool)> {
         let descriptor = self.resource_table.get_mut(&fd).unwrap();
         let blob = self.gitfs.read_blob(descriptor.id)?;
-        // TODO: Handle EOF properly.
         // TODO: Handle usize properly.
         let length = length as usize;
         let offset = offset as usize;
-        Ok((blob[offset..(offset + length)].to_owned(), false))
+        if offset >= blob.len() {
+            // TODO: Should this be an error?
+            Ok((Vec::new(), true))
+        } else {
+            let length = length.min(blob.len() - offset);
+            let eof = offset + length >= blob.len();
+            Ok((blob[offset..(offset + length)].to_owned(), eof))
+        }
     }
 
     async fn write(
