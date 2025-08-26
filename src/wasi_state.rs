@@ -1,16 +1,18 @@
 use std::collections::{hash_map, HashMap};
 
-use crate::wasi_fs::{
-    self, wasi::filesystem::types::{
-        Advice, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry, ErrorCode,
-        Filesize, MetadataHashValue, NewTimestamp, OpenFlags, PathFlags,
-    }, Descriptor, FsError, FsResult, ReaddirIterator
-};
 use anyhow::Context as _;
 use gix::{objs::tree::EntryKind, ObjectId, Repository};
 use wasmtime::component::{HasData, Linker, Resource};
 use wasmtime_wasi::{
-    p2::{StreamError, StreamResult, WasiCtx, WasiView}, ResourceTable
+    p2::{
+        bindings::filesystem::{
+            self,
+            types::{
+                Advice, Descriptor, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry, ErrorCode, Filesize, MetadataHashValue, NewTimestamp, OpenFlags, PathFlags, ReaddirIterator
+            }
+        }, FsError, FsResult, StreamError, StreamResult, WasiCtx, WasiView
+    },
+    ResourceTable, ResourceTableError,
 };
 use wasmtime_wasi_io::IoView;
 
@@ -31,6 +33,69 @@ impl WasiView for WasiState {
 impl IoView for WasiState {
     fn table(&mut self) -> &mut ResourceTable {
         &mut self.resource_table
+    }
+}
+
+// A descriptor is the state associated with a file descriptor. It is stored
+// in the resource table. Normally this would hold any information you need
+// to access the underlying file/directory (e.g. a POSIX file descriptor).
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct MyDescriptor {
+    // What kind of Git object it is (blob, tree etc.)
+    pub kind: EntryKind,
+    // Git commit ID.
+    pub id: ObjectId,
+}
+
+// Type returned by `read_dir()` that allows iterating through directory entries.
+pub struct MyReaddirIterator {
+    pub entries: Vec<DirectoryEntry>,
+}
+
+
+trait ResourceTableExt {
+    fn push_my_descriptor(&mut self, my_descriptor: MyDescriptor) -> anyhow::Result<Resource<Descriptor>>;
+    fn get_my_descriptor(&self, key: &Resource<Descriptor>) -> Result<&MyDescriptor, ResourceTableError>;
+    fn get_mut_my_descriptor(
+        &mut self,
+        key: &Resource<Descriptor>,
+    ) -> Result<&mut MyDescriptor, ResourceTableError>;
+
+    fn push_my_readdiriterator(&mut self, my_readdiriterator: MyReaddirIterator) -> anyhow::Result<Resource<ReaddirIterator>>;
+    fn get_my_readdiriterator(&self, key: &Resource<ReaddirIterator>) -> Result<&MyReaddirIterator, ResourceTableError>;
+    fn get_mut_my_readdiriterator(
+        &mut self,
+        key: &Resource<ReaddirIterator>,
+    ) -> Result<&mut MyReaddirIterator, ResourceTableError>;
+}
+
+impl ResourceTableExt for ResourceTable {
+    fn push_my_descriptor(&mut self, my_descriptor: MyDescriptor) -> anyhow::Result<Resource<Descriptor>> {
+        todo!()
+    }
+    fn get_my_descriptor(&self, key: &Resource<Descriptor>) -> Result<&MyDescriptor, ResourceTableError> {
+        todo!()
+    }
+    fn get_mut_my_descriptor(
+        &mut self,
+        key: &Resource<Descriptor>,
+    ) -> Result<&mut MyDescriptor, ResourceTableError> {
+        todo!()
+    }
+
+    fn push_my_readdiriterator(&mut self, my_readdiriterator: MyReaddirIterator) -> anyhow::Result<Resource<ReaddirIterator>> {
+        todo!()
+    }
+
+    fn get_my_readdiriterator(&self, key: &Resource<ReaddirIterator>) -> Result<&MyReaddirIterator, ResourceTableError> {
+        todo!()
+    }
+
+    fn get_mut_my_readdiriterator(
+        &mut self,
+        key: &Resource<ReaddirIterator>,
+    ) -> Result<&mut MyReaddirIterator, ResourceTableError> {
+        todo!()
     }
 }
 
@@ -61,7 +126,7 @@ impl GitFs {
     //
     // Only relative paths are allowed. Absolute paths cause a permission error.
     // For this function the target file or directory (or symlink) must exist.
-    fn resolve_path(&mut self, from: Descriptor, relative_path: &str, follow_final_symlink: bool) -> FsResult<Descriptor> {
+    fn resolve_path(&mut self, from: MyDescriptor, relative_path: &str, follow_final_symlink: bool) -> FsResult<MyDescriptor> {
         if relative_path.starts_with('/') {
             return Err(ErrorCode::Access.into());
         }
@@ -145,7 +210,7 @@ fn gix_entry_kind_to_descriptor_type(kind: EntryKind) -> DescriptorType {
 // from which to try open_at to get more Descriptors. If we don't provide
 // anything here, none of the methods on Descriptor will ever be reachable,
 // because Resources are unforgable (the runtime will trap bogus indexes).
-impl wasi_fs::wasi::filesystem::preopens::Host for WasiState {
+impl filesystem::preopens::Host for WasiState {
     fn get_directories(
         &mut self,
     ) -> anyhow::Result<
@@ -158,7 +223,7 @@ impl wasi_fs::wasi::filesystem::preopens::Host for WasiState {
         Ok(vec![(
             // Create a new file descriptor and add it to the resource table,
             // returning its index in the table.
-            self.resource_table.push(Descriptor{
+            self.resource_table.push_my_descriptor(MyDescriptor{
                 kind: EntryKind::Tree,
                 id: self.gitfs.root,
             }).with_context(|| format!("failed to push root preopen"))?,
@@ -169,7 +234,7 @@ impl wasi_fs::wasi::filesystem::preopens::Host for WasiState {
 }
 
 // Allow performing all the usual filesystem operations on a file descriptor.
-impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
+impl filesystem::types::HostDescriptor for WasiState {
     fn read_via_stream(
         &mut self,
         fd: Resource<Descriptor>,
@@ -223,7 +288,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
     }
 
     async fn get_type(&mut self, fd: Resource<Descriptor>) -> FsResult<DescriptorType> {
-        let descriptor = self.resource_table.get(&fd).unwrap();
+        let descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         Ok(gix_entry_kind_to_descriptor_type(descriptor.kind))
     }
 
@@ -246,7 +311,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         length: Filesize,
         offset: Filesize,
     ) -> FsResult<(Vec<u8>, bool)> {
-        let descriptor = self.resource_table.get_mut(&fd).unwrap();
+        let descriptor = self.resource_table.get_mut_my_descriptor(&fd).unwrap();
         let blob = self.gitfs.read_blob(descriptor.id)?;
         // TODO: Handle usize properly.
         let length = length as usize;
@@ -274,7 +339,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         &mut self,
         fd: Resource<Descriptor>,
     ) -> FsResult<Resource<ReaddirIterator>> {
-        let descriptor = self.resource_table.get(&fd).unwrap();
+        let descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         // TODO: Could use `find_tree_iter()` ideally but I don't know if the
         // lifetime issues are easy to deal with, or if it makes any performance difference.
         let tree = self.gitfs.repo.find_tree(descriptor.id).unwrap();
@@ -305,7 +370,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
     }
 
     async fn stat(&mut self, fd: Resource<Descriptor>) -> FsResult<DescriptorStat> {
-        let descriptor = self.resource_table.get(&fd).unwrap();
+        let descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         Ok(DescriptorStat {
             type_: gix_entry_kind_to_descriptor_type(descriptor.kind),
             // Git doesn't support hard links and the normal case is 1, not 0.
@@ -331,7 +396,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         path_flags: PathFlags,
         path: String,
     ) -> FsResult<DescriptorStat> {
-        let from_descriptor = self.resource_table.get(&fd).unwrap();
+        let from_descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         let follow_final_symlink: bool = path_flags.contains(PathFlags::SYMLINK_FOLLOW);
         let descriptor = self.gitfs.resolve_path(*from_descriptor, &path, follow_final_symlink)?;
 
@@ -393,7 +458,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 
         // TODO: Handle other DescriptorFlags maybe.
 
-        let from_descriptor = self.resource_table.get(&fd).unwrap();
+        let from_descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         let follow_final_symlink: bool = path_flags.contains(PathFlags::SYMLINK_FOLLOW);
         let descriptor = self.gitfs.resolve_path(*from_descriptor, &path, follow_final_symlink)?;
 
@@ -405,11 +470,11 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
             return Err(ErrorCode::NotDirectory.into());
         }
 
-        Ok(self.resource_table.push(descriptor).unwrap())
+        Ok(self.resource_table.push_my_descriptor(descriptor).unwrap())
     }
 
     async fn readlink_at(&mut self, fd: Resource<Descriptor>, path: String) -> FsResult<String> {
-        let from_descriptor = self.resource_table.get(&fd).unwrap();
+        let from_descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         let descriptor = self.gitfs.resolve_path(*from_descriptor, &path, false)?;
 
         if descriptor.kind != EntryKind::Link {
@@ -457,15 +522,15 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
         other: Resource<Descriptor>,
     ) -> wasmtime::Result<bool> {
-        let fd = self.resource_table.get(&fd).unwrap();
-        let other = self.resource_table.get(&other).unwrap();
+        let fd = self.resource_table.get_my_descriptor(&fd).unwrap();
+        let other = self.resource_table.get_my_descriptor(&other).unwrap();
         Ok(fd == other)
     }
 
     async fn metadata_hash(&mut self, fd: Resource<Descriptor>) -> FsResult<MetadataHashValue> {
         // Kind of unclear what the use case for this is if you ask me.
         // While this is read-only we can just return the object ID which is long enough.
-        let descriptor = self.resource_table.get(&fd).unwrap();
+        let descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         Ok(MetadataHashValue{
             lower: u64::from_le_bytes(descriptor.id.as_bytes()[0..8].try_into().unwrap()),
             upper: u64::from_le_bytes(descriptor.id.as_bytes()[8..16].try_into().unwrap()),
@@ -480,7 +545,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
     ) -> FsResult<MetadataHashValue> {
         // Kind of unclear what the use case for this is if you ask me.
         // While this is read-only we can just return the object ID which is long enough.
-        let descriptor = self.resource_table.get(&fd).unwrap();
+        let descriptor = self.resource_table.get_my_descriptor(&fd).unwrap();
         Ok(MetadataHashValue{
             lower: u64::from_le_bytes(descriptor.id.as_bytes()[0..8].try_into().unwrap()),
             upper: u64::from_le_bytes(descriptor.id.as_bytes()[8..16].try_into().unwrap()),
@@ -498,7 +563,7 @@ impl wasi_fs::wasi::filesystem::types::HostDescriptor for WasiState {
 }
 
 // Allow iterating through a directory returned by `read_directory()`.
-impl wasi_fs::wasi::filesystem::types::HostDirectoryEntryStream for WasiState {
+impl filesystem::types::HostDirectoryEntryStream for WasiState {
     // Get the next directory entry or None.
     async fn read_directory_entry(
         &mut self,
@@ -510,14 +575,14 @@ impl wasi_fs::wasi::filesystem::types::HostDirectoryEntryStream for WasiState {
 
     fn drop(
         &mut self,
-        stream: Resource<wasi_fs::wasi::filesystem::types::DirectoryEntryStream>,
+        stream: Resource<filesystem::types::DirectoryEntryStream>,
     ) -> anyhow::Result<()> {
         self.resource_table.delete(stream)?;
         Ok(())
     }
 }
 
-impl wasi_fs::wasi::filesystem::types::Host for WasiState {
+impl filesystem::types::Host for WasiState {
     fn convert_error_code(&mut self, err: FsError) -> wasmtime::Result<ErrorCode> {
         err.downcast()
     }
@@ -605,7 +670,7 @@ impl HasData for HasWasiFs {
 }
 
 pub fn add_to_linker_async(linker: &mut Linker<WasiState>) -> anyhow::Result<()> {
-    wasi_fs::wasi::filesystem::types::add_to_linker::<WasiState, HasWasiFs>(linker, |t| t)?;
-    wasi_fs::wasi::filesystem::preopens::add_to_linker::<WasiState, HasWasiFs>(linker, |t| t)?;
+    filesystem::types::add_to_linker::<WasiState, HasWasiFs>(linker, |t| t)?;
+    filesystem::preopens::add_to_linker::<WasiState, HasWasiFs>(linker, |t| t)?;
     Ok(())
 }

@@ -1,4 +1,3 @@
-mod wasi_fs;
 mod wasi_linker_excluding_filesystem;
 mod wasi_state;
 
