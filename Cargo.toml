@@ -18,12 +18,17 @@ futures = "0.3.31"
 gix = "0.73.0"
 tokio = { version = "1.46.0", features = ["rt", "macros", "fs"] }
 tokio-util = { version = "0.7.15", features = ["io",] }
-wasmtime = "34.0.1"
-wasmtime-wasi = "34.0.1"
-wasmtime-wasi-io = "34.0.1"
+wasmtime = "37.0.0"
+wasmtime-wasi = "37.0.0"
+wasmtime-wasi-io = "37.0.0"
 
 [workspace]
 resolver = "2"
 members = [
     "wasi_ls",
 ]
+
+[patch.crates-io]
+wasmtime = { git = "https://github.com/bytecodealliance/wasmtime" }
+wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime" }
+wasmtime-wasi-io = { git = "https://github.com/bytecodealliance/wasmtime" }

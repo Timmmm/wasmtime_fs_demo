@@ -8,13 +8,11 @@ use wasmtime_wasi::{
         bindings::filesystem::{
             self,
             types::{
-                Advice, Descriptor, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry, ErrorCode, Filesize, MetadataHashValue, NewTimestamp, OpenFlags, PathFlags, ReaddirIterator
+                Advice, Descriptor, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry, ErrorCode, Filesize, MetadataHashValue, NewTimestamp, OpenFlags, PathFlags
             }
-        }, FsError, FsResult, StreamError, StreamResult, WasiCtx, WasiView
-    },
-    ResourceTable, ResourceTableError,
+        }, FsError, FsResult, ReaddirIterator, StreamError, StreamResult
+    }, ResourceTable, ResourceTableError, WasiCtx, WasiCtxView, WasiView
 };
-use wasmtime_wasi_io::IoView;
 
 pub struct WasiState {
     pub wasi_ctx: WasiCtx,
@@ -25,14 +23,11 @@ pub struct WasiState {
 }
 
 impl WasiView for WasiState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
-    }
-}
-
-impl IoView for WasiState {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.resource_table
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
     }
 }
 
@@ -60,6 +55,7 @@ trait ResourceTableExt {
         &mut self,
         key: &Resource<Descriptor>,
     ) -> Result<&mut MyDescriptor, ResourceTableError>;
+    fn delete_my_descriptor(&mut self, key: Resource<Descriptor>) -> std::result::Result<MyDescriptor, ResourceTableError>;
 
     fn push_my_readdiriterator(&mut self, my_readdiriterator: MyReaddirIterator) -> anyhow::Result<Resource<ReaddirIterator>>;
     fn get_my_readdiriterator(&self, key: &Resource<ReaddirIterator>) -> Result<&MyReaddirIterator, ResourceTableError>;
@@ -67,36 +63,54 @@ trait ResourceTableExt {
         &mut self,
         key: &Resource<ReaddirIterator>,
     ) -> Result<&mut MyReaddirIterator, ResourceTableError>;
+    fn delete_my_readdiriterator(&mut self, key: Resource<ReaddirIterator>) -> std::result::Result<MyReaddirIterator, ResourceTableError>;
+
 }
 
 impl ResourceTableExt for ResourceTable {
     fn push_my_descriptor(&mut self, my_descriptor: MyDescriptor) -> anyhow::Result<Resource<Descriptor>> {
-        todo!()
+        let my_resource = self.push(my_descriptor)?;
+        Ok(if my_resource.owned() { Resource::new_own(my_resource.rep()) } else { Resource::new_borrow(my_resource.rep()) })
     }
     fn get_my_descriptor(&self, key: &Resource<Descriptor>) -> Result<&MyDescriptor, ResourceTableError> {
-        todo!()
+        let my_key = if key.owned() { Resource::new_own(key.rep()) } else { Resource::new_borrow(key.rep()) };
+        self.get(&my_key)
     }
     fn get_mut_my_descriptor(
         &mut self,
         key: &Resource<Descriptor>,
     ) -> Result<&mut MyDescriptor, ResourceTableError> {
-        todo!()
+        let my_key = if key.owned() { Resource::new_own(key.rep()) } else { Resource::new_borrow(key.rep()) };
+        self.get_mut(&my_key)
+    }
+    fn delete_my_descriptor(&mut self, key: Resource<Descriptor>) -> std::result::Result<MyDescriptor, ResourceTableError> {
+        let my_key = if key.owned() { Resource::new_own(key.rep()) } else { Resource::new_borrow(key.rep()) };
+        self.delete(my_key)
     }
 
     fn push_my_readdiriterator(&mut self, my_readdiriterator: MyReaddirIterator) -> anyhow::Result<Resource<ReaddirIterator>> {
-        todo!()
+        let my_resource = self.push(my_readdiriterator)?;
+        Ok(if my_resource.owned() { Resource::new_own(my_resource.rep()) } else { Resource::new_borrow(my_resource.rep()) })
     }
 
     fn get_my_readdiriterator(&self, key: &Resource<ReaddirIterator>) -> Result<&MyReaddirIterator, ResourceTableError> {
-        todo!()
+        let my_key = if key.owned() { Resource::new_own(key.rep()) } else { Resource::new_borrow(key.rep()) };
+        self.get(&my_key)
     }
 
     fn get_mut_my_readdiriterator(
         &mut self,
         key: &Resource<ReaddirIterator>,
     ) -> Result<&mut MyReaddirIterator, ResourceTableError> {
-        todo!()
+        let my_key = if key.owned() { Resource::new_own(key.rep()) } else { Resource::new_borrow(key.rep()) };
+        self.get_mut(&my_key)
     }
+
+    fn delete_my_readdiriterator(&mut self, key: Resource<ReaddirIterator>) -> std::result::Result<MyReaddirIterator, ResourceTableError> {
+        let my_key = if key.owned() { Resource::new_own(key.rep()) } else { Resource::new_borrow(key.rep()) };
+        self.delete(my_key)
+    }
+
 }
 
 pub struct GitFs {
@@ -240,7 +254,7 @@ impl filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
         offset: u64,
     ) -> FsResult<Resource<Box<(dyn wasmtime_wasi::p2::InputStream + 'static)>>> {
-        let descriptor = self.resource_table.get_mut(&fd).unwrap();
+        let descriptor = self.resource_table.get_mut_my_descriptor(&fd).unwrap();
         let data = self.gitfs.read_blob(descriptor.id)?;
         // TODO: Don't copy all the data.
         // TODO: Handle usize=32 bit. In fact, we probably can't actually read files
@@ -353,7 +367,7 @@ impl filesystem::types::HostDescriptor for WasiState {
         // Reverse because we pop them off the back when reading.
         // TODO: Probably can do this more efficiently somehow.
         entries.reverse();
-        Ok(self.resource_table.push(ReaddirIterator{entries}).unwrap())
+        Ok(self.resource_table.push_my_readdiriterator(MyReaddirIterator{entries}).unwrap())
     }
 
     async fn sync(&mut self, _fd: Resource<Descriptor>) -> FsResult<()> {
@@ -557,7 +571,7 @@ impl filesystem::types::HostDescriptor for WasiState {
         fd: Resource<Descriptor>,
     ) -> anyhow::Result<()> {
         // This will drop the `Descriptor` which should close the file.
-        self.resource_table.delete(fd)?;
+        self.resource_table.delete_my_descriptor(fd)?;
         Ok(())
     }
 }
@@ -569,15 +583,15 @@ impl filesystem::types::HostDirectoryEntryStream for WasiState {
         &mut self,
         stream: Resource<ReaddirIterator>,
     ) -> FsResult<Option<DirectoryEntry>> {
-        let stream = self.resource_table.get_mut(&stream).unwrap();
+        let stream = self.resource_table.get_mut_my_readdiriterator(&stream).unwrap();
         Ok(stream.entries.pop())
     }
 
     fn drop(
         &mut self,
-        stream: Resource<filesystem::types::DirectoryEntryStream>,
+        stream: Resource<ReaddirIterator>,
     ) -> anyhow::Result<()> {
-        self.resource_table.delete(stream)?;
+        self.resource_table.delete_my_readdiriterator(stream)?;
         Ok(())
     }
 }
@@ -647,21 +661,6 @@ impl wasmtime_wasi::p2::InputStream for ReadStream {
         }
     }
 }
-
-// wasmtime has a super complicated nested layer of newtypes and traits to get
-// around the orphan rule:
-//
-//   IoView: trait with .table() method returning ResourceTable.
-//   WasiView: trait with .ctx() method returning WasiCtx. Inherits IoView
-//   HasData: trait with ::Data associated type.
-//
-//   IoImpl<T>: Wrapper around T implementing IoView.
-//   WasiImpl<T>: Wrapper around IoImpl<T> implementing IoView and WasiView.
-//   HasWasi<T>: Wrapper around T providing HasData trait with ::Data set to WasiImpl<T>
-//
-// I could make this generic by adding a *third* layer of newtypes (`WasiFsImpl<T>`)
-// but that just gets really complicated and this isn't a library so I'm using
-// a concrete type `WasiState` instead.
 
 struct HasWasiFs;
 

@@ -10,8 +10,8 @@ use wasmtime::{
     component::{Component, Linker},
 };
 use wasmtime_wasi::{
-    I32Exit, ResourceTable,
-    p2::{WasiCtxBuilder, bindings::Command},
+    I32Exit, ResourceTable, WasiCtxBuilder,
+    p2::bindings::Command,
 };
 
 async fn run(wasi_component_path: &Path) -> Result<()> {
