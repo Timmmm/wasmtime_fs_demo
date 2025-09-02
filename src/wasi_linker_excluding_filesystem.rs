@@ -1,11 +1,11 @@
 //! Copy & paste of wasmtime-wasi's `add_to_linker_async` but without wasi-filesystem.
 
 use wasmtime::component::{HasData, Linker};
-use wasmtime_wasi::{p2::bindings, ResourceTable, WasiView};
 use wasmtime_wasi::cli::{WasiCli, WasiCliView as _};
 use wasmtime_wasi::clocks::{WasiClocks, WasiClocksView as _};
 use wasmtime_wasi::random::WasiRandom;
 use wasmtime_wasi::sockets::{WasiSockets, WasiSocketsView as _};
+use wasmtime_wasi::{ResourceTable, WasiView, p2::bindings};
 
 pub fn add_to_linker_async<T: WasiView>(linker: &mut Linker<T>) -> anyhow::Result<()> {
     let options = bindings::LinkOptions::default();

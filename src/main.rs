@@ -3,16 +3,13 @@ mod wasi_state;
 
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use wasi_state::{GitFs, WasiState};
 use wasmtime::{
     Engine, Store,
     component::{Component, Linker},
 };
-use wasmtime_wasi::{
-    I32Exit, ResourceTable, WasiCtxBuilder,
-    p2::bindings::Command,
-};
+use wasmtime_wasi::{I32Exit, ResourceTable, WasiCtxBuilder, p2::bindings::Command};
 
 async fn run(wasi_component_path: &Path) -> Result<()> {
     let engine =
